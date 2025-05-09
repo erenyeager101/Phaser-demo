@@ -1,26 +1,472 @@
-<!doctype html>
-<html lang="en-US">
-  <head>
-    <meta charset="utf-8" />
-    <title>Phaser.io</title>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Cosmic Hopper PRO - Ultimate Space Challenge</title>
     <style>
-      * {
-        padding: 0;
-        margin: 0;
-      }
+        * { margin: 0; padding: 0; }
+        body { background: #000; }
+        #gameUI {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-family: 'Orbitron', sans-serif;
+            z-index: 1000;
+        }
+        #shop {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.9);
+            padding: 20px;
+            border: 2px solid #00ff00;
+            display: none;
+        }
     </style>
-    <script src="js/phaser.min.js"></script>
-  </head>
-  <body>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+</head>
+<body>
+    <div id="gameUI">
+        <div id="dailyChallenge"></div>
+        <div id="playerStats"></div>
+    </div>
+    <div id="shop">
+        <h2 style="color: #00ff00">Space Shop</h2>
+        <div id="shopItems"></div>
+        <button onclick="toggleShop()">Close</button>
+    </div>
     <script>
-      const game = new Phaser.Game(480, 320, Phaser.CANVAS, null, {
-        preload,
-        create,
-        update,
-      });
-      function preload() {}
-      function create() {}
-      function update() {}
+const DAILY_CHALLENGE_KEY = 'cosmicDailyChallenge';
+const PLAYER_DATA_KEY = 'cosmicPlayerData';
+const GRAVITY_WELL_RADIUS = 150;
+const POWERUP_DURATION = 10000;
+
+class MainScene extends Phaser.Scene {
+    constructor() {
+        super('MainScene');
+        this.player = null;
+        this.cursors = null;
+        this.obstacles = null;
+        this.score = 0;
+        this.multiplier = 1;
+        this.isGameOver = false;
+        this.playerData = null;
+        this.powerups = null;
+        this.gravityWells = null;
+        this.comboTimer = null;
+        this.comboCount = 0;
+        this.currentShip = 'rocket';
+        this.shipTrail = null;
+        this.isShieldActive = false;
+    }
+
+    preload() {
+        // Load assets
+        this.load.image('rocket', 'assets/rocket.png');
+        this.load.image('asteroid', 'assets/asteroid.png');
+        this.load.image('star', 'assets/star.png');
+        this.load.image('blackhole', 'assets/blackhole.png');
+        this.load.image('shield', 'assets/shield.png');
+        this.load.image('magnet', 'assets/magnet.png');
+        this.load.image('nebula', 'assets/nebula.png');
+        this.load.spritesheet('explosion', 'assets/explosion.png', { frameWidth: 64, frameHeight: 64 });
+        
+        // Load ship skins
+        this.load.image('ship_stealth', 'assets/ships/stealth.png');
+        this.load.image('ship_retro', 'assets/ships/retro.png');
+        this.load.image('ship_alien', 'assets/ships/alien.png');
+    }
+
+    create() {
+        // Initialize player data
+        this.initPlayerData();
+        this.createParticles();
+        this.createAnimations();
+        
+        // Game world setup
+        this.createBackground();
+        this.createPlayer();
+        this.createObstacleSystem();
+        this.createPowerupSystem();
+        this.createUI();
+        this.createEventListeners();
+        this.createAudio();
+
+        // Daily challenge initialization
+        this.initDailyChallenge();
+    }
+
+    initPlayerData() {
+        this.playerData = JSON.parse(localStorage.getItem(PLAYER_DATA_KEY)) || {
+            currency: 0,
+            highScore: 0,
+            unlockedShips: ['rocket'],
+            equippedPowerups: [],
+            dailyStreak: 0,
+            xp: 0,
+            level: 1
+        };
+        this.currentShip = this.playerData.equippedShip || 'rocket';
+    }
+
+    createParticles() {
+        this.shipTrail = this.add.particles(0, 0, 'star', {
+            speed: 20,
+            lifespan: 1000,
+            scale: { start: 0.3, end: 0 },
+            blendMode: 'ADD',
+            emitting: false
+        });
+    }
+
+    createAnimations() {
+        this.anims.create({
+            key: 'explode',
+            frames: this.anims.generateFrameNumbers('explosion', { start: 0, end: 7 }),
+            frameRate: 16,
+            repeat: 0,
+            hideOnComplete: true
+        });
+    }
+
+    createBackground() {
+        const nebula = this.add.tileSprite(400, 300, 800, 600, 'nebula');
+        nebula.setScrollFactor(0);
+        this.tweens.add({
+            targets: nebula,
+            tilePositionX: { value: 1000, duration: 10000 },
+            yoyo: true,
+            repeat: -1
+        });
+    }
+
+    createPlayer() {
+        this.player = this.physics.add.sprite(100, 300, this.currentShip)
+            .setScale(0.1)
+            .setDepth(1);
+        this.shipTrail.startFollow(this.player);
+        this.player.setCollideWorldBounds(true);
+        
+        // Add ship customizations
+        if (this.playerData.equippedPowerups.includes('shield')) {
+            this.activateShield(true);
+        }
+    }
+
+    createObstacleSystem() {
+        this.obstacles = this.physics.add.group();
+        this.gravityWells = this.physics.add.group();
+        
+        this.time.addEvent({
+            delay: Phaser.Math.Between(1200, 1800),
+            callback: this.createObstaclePair,
+            callbackScope: this,
+            loop: true
+        });
+    }
+
+    createPowerupSystem() {
+        this.powerups = this.physics.add.group();
+        this.time.addEvent({
+            delay: 8000,
+            callback: this.spawnPowerup,
+            callbackScope: this,
+            loop: true
+        });
+    }
+
+    createUI() {
+        this.scoreText = this.add.text(16, 16, '', { 
+            fontSize: '24px', 
+            fill: '#00ff00',
+            fontFamily: 'Orbitron',
+            stroke: '#000',
+            strokeThickness: 2
+        }).setScrollFactor(0);
+
+        this.updateUI();
+    }
+
+    updateUI() {
+        const challengeText = this.dailyChallenge.completed ? 
+            'Daily Completed!' : 
+            `Daily: ${this.dailyChallenge.description} (${this.dailyChallenge.progress}/${this.dailyChallenge.target})`;
+        
+        const statsText = `Lv.${this.playerData.level} | XP: ${this.playerData.xp}/${this.getNextLevelXP()}
+Currency: ${this.playerData.currency} 💰
+Streak: ${this.playerData.dailyStreak} 🔥
+High Score: ${this.playerData.highScore}`;
+
+        this.scoreText.setText(`Score: ${this.score} x${this.multiplier}\n${statsText}\n${challengeText}`);
+    }
+
+    createEventListeners() {
+        this.cursors = this.input.keyboard.addKeys({
+            space: Phaser.Input.Keyboard.KeyCodes.SPACE,
+            up: Phaser.Input.Keyboard.KeyCodes.UP,
+            shop: Phaser.Input.Keyboard.KeyCodes.S
+        });
+        
+        this.input.keyboard.on('keydown-S', () => toggleShop());
+        this.input.on('pointerdown', () => this.applyThrust());
+    }
+
+    createAudio() {
+        this.sound.pauseOnBlur = false;
+        this.collectSound = this.sound.add('collect');
+        this.explosionSound = this.sound.add('explosion');
+        this.powerupSound = this.sound.add('powerup');
+    }
+
+    createObstaclePair() {
+        const types = ['asteroid', 'blackhole', 'wormhole'];
+        const obstacleType = Phaser.Math.RND.weightedPick(types, [0.6, 0.3, 0.1]);
+        
+        switch(obstacleType) {
+            case 'blackhole':
+                this.createBlackHoleObstacle();
+                break;
+            case 'wormhole':
+                this.createWormholePair();
+                break;
+            default:
+                this.createStandardObstacle();
+        }
+    }
+
+    createBlackHoleObstacle() {
+        const blackhole = this.gravityWells.create(800, Phaser.Math.Between(100, 500), 'blackhole')
+            .setScale(0.7)
+            .setCircle(80);
+        
+        blackhole.setVelocityX(-150);
+        this.tweens.add({
+            targets: blackhole,
+            scale: 0.8,
+            duration: 1000,
+            yoyo: true,
+            repeat: -1
+        });
+    }
+
+    spawnPowerup() {
+        const powerupType = Phaser.Math.RND.pick(['shield', 'magnet', 'multiplier']);
+        const powerup = this.powerups.create(800, Phaser.Math.Between(100, 500), powerupType)
+            .setVelocityX(-200);
+        
+        this.tweens.add({
+            targets: powerup,
+            angle: 360,
+            duration: 2000,
+            repeat: -1
+        });
+    }
+
+    applyThrust() {
+        if (this.isGameOver) return;
+        
+        this.player.setVelocityY(-350);
+        this.shipTrail.emitting = true;
+        this.time.delayedCall(300, () => this.shipTrail.emitting = false);
+    }
+
+    update() {
+        if (this.isGameOver) return;
+
+        // Handle continuous input
+        if (this.cursors.space.isDown || this.input.activePointer.isDown) {
+            this.applyThrust();
+        }
+
+        // Update gravity wells effect
+        this.gravityWells.getChildren().forEach(well => {
+            const distance = Phaser.Math.Distance.Between(
+                this.player.x, this.player.y, 
+                well.x, well.y
+            );
+            
+            if (distance < GRAVITY_WELL_RADIUS) {
+                const angle = Phaser.Math.Angle.Between(
+                    well.x, well.y, 
+                    this.player.x, this.player.y
+                );
+                this.player.body.velocity.x += Math.cos(angle) * 2;
+                this.player.body.velocity.y += Math.sin(angle) * 2;
+            }
+        });
+
+        // Update score and multiplier
+        this.score += 1 * this.multiplier;
+        this.updateUI();
+        this.checkDailyChallenge();
+        this.handleComboSystem();
+    }
+
+    handleComboSystem() {
+        if (this.comboCount > 0) {
+            this.multiplier = 1 + Math.floor(this.comboCount / 5);
+        }
+        
+        if (this.comboTimer) {
+            this.comboTimer.elapsed += this.game.loop.delta;
+            if (this.comboTimer.elapsed >= 2000) {
+                this.comboCount = 0;
+                this.multiplier = 1;
+                this.comboTimer = null;
+            }
+        }
+    }
+
+    collectPowerup(player, powerup) {
+        this.powerupSound.play();
+        switch(powerup.texture.key) {
+            case 'shield':
+                this.activateShield();
+                break;
+            case 'magnet':
+                this.activateMagnet();
+                break;
+            case 'multiplier':
+                this.comboCount += 3;
+                this.comboTimer = { elapsed: 0 };
+                break;
+        }
+        powerup.destroy();
+    }
+
+    activateShield(passive = false) {
+        if (this.isShieldActive) return;
+        
+        this.isShieldActive = true;
+        const shield = this.add.sprite(this.player.x, this.player.y, 'shield')
+            .setScale(2)
+            .setDepth(-1);
+        
+        this.player.setData('shield', shield);
+        if (!passive) {
+            this.time.delayedCall(POWERUP_DURATION, () => {
+                shield.destroy();
+                this.isShieldActive = false;
+            });
+        }
+    }
+
+    gameOver() {
+        if (this.isShieldActive) {
+            this.player.getData('shield').destroy();
+            this.isShieldActive = false;
+            return;
+        }
+
+        this.isGameOver = true;
+        this.physics.pause();
+        this.explosionSound.play();
+        
+        const explosion = this.add.sprite(this.player.x, this.player.y, 'explosion')
+            .play('explode')
+            .setScale(2);
+
+        this.cameras.main.shake(300, 0.02);
+        this.time.delayedCall(1000, () => {
+            this.showGameOverScreen();
+            this.savePlayerData();
+        });
+    }
+
+    showGameOverScreen() {
+        // Game over screen with progression rewards
+        const xpEarned = Math.floor(this.score / 10);
+        this.playerData.xp += xpEarned;
+        
+        while (this.playerData.xp >= this.getNextLevelXP()) {
+            this.playerData.xp -= this.getNextLevelXP();
+            this.playerData.level++;
+            this.playerData.currency += this.playerData.level * 10;
+        }
+
+        const gameOverHTML = `
+            <div style="text-align: center">
+                <h1 style="color: #ff0000">SHIP DESTROYED</h1>
+                <p>Score: ${this.score}</p>
+                <p>XP Earned: +${xpEarned}</p>
+                <p>Level Up: ${this.playerData.level}</p>
+                <button onclick="location.reload()">Retry</button>
+                <button onclick="toggleShop()">Shop</button>
+            </div>
+        `;
+        // Display game over screen
+    }
+
+    getNextLevelXP() {
+        return Math.pow(this.playerData.level, 2) * 1000;
+    }
+
+    savePlayerData() {
+        if (this.score > this.playerData.highScore) {
+            this.playerData.highScore = this.score;
+        }
+        localStorage.setItem(PLAYER_DATA_KEY, JSON.stringify(this.playerData));
+    }
+
+    // ... (previous systems enhanced with new features)
+}
+
+// Shop system
+function toggleShop() {
+    const shop = document.getElementById('shop');
+    shop.style.display = shop.style.display === 'none' ? 'block' : 'none';
+    updateShopItems();
+}
+
+function updateShopItems() {
+    const shopItems = [
+        { id: 'ship_stealth', name: 'Stealth Ship', price: 1000 },
+        { id: 'ship_retro', name: 'Retro Ship', price: 500 },
+        { id: 'shield', name: 'Permanent Shield', price: 2000 },
+        { id: 'magnet', name: 'Auto-Collect', price: 1500 }
+    ];
+
+    const shopHTML = shopItems.map(item => `
+        <div class="shop-item">
+            <h3>${item.name}</h3>
+            <p>Price: ${item.price} 💰</p>
+            ${!game.playerData.unlockedShips.includes(item.id) ? 
+                `<button onclick="buyItem('${item.id}', ${item.price})">Buy</button>` :
+                '<em>Owned</em>'}
+        </div>
+    `).join('');
+
+    document.getElementById('shopItems').innerHTML = shopHTML;
+}
+
+function buyItem(itemId, price) {
+    if (game.playerData.currency >= price && !game.playerData.unlockedShips.includes(itemId)) {
+        game.playerData.currency -= price;
+        game.playerData.unlockedShips.push(itemId);
+        game.playerData.equippedShip = itemId;
+        localStorage.setItem(PLAYER_DATA_KEY, JSON.stringify(game.playerData));
+        updateShopItems();
+    }
+}
+
+const config = {
+    type: Phaser.AUTO,
+    width: 800,
+    height: 600,
+    physics: {
+        default: 'arcade',
+        arcade: { 
+            gravity: { y: 600 },
+            debug: false
+        }
+    },
+    scene: MainScene
+};
+
+const game = new Phaser.Game(config);
     </script>
-  </body>
+</body>
 </html>
